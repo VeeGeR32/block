@@ -1,6 +1,7 @@
 "use client";
 import { useState, useEffect, useRef } from 'react';
 import { useSession, signOut } from 'next-auth/react';
+import { useRouter } from 'next/navigation';
 
 const C_BLUE = '#044389';
 const C_ORANGE = '#EC4E20';
@@ -67,6 +68,13 @@ const formatHeures = (blocIndex: number) => `${(blocIndex * 4).toString().padSta
 
 export default function AgendaExtremeMinimalism() {
   const { data: session, status } = useSession();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (status === 'unauthenticated') {
+      router.push('/login');
+    }
+  }, [status, router]);
   
   const [isReady, setIsReady] = useState(false);
   
@@ -593,6 +601,8 @@ export default function AgendaExtremeMinimalism() {
       </div>
     );
   };
+
+  if (status === 'loading') return <div className="h-screen w-screen bg-black flex items-center justify-center"><div className="text-white">Chargement...</div></div>;
 
   if (!isReady) return <div className="h-screen w-screen bg-black" />;
 
