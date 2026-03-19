@@ -5,7 +5,7 @@ import { useSession, signOut } from 'next-auth/react';
 const C_BLUE = '#044389';
 const C_ORANGE = '#EC4E20';
 
-const VUES = {
+const VUES: any = {
   0: { niveau: 0, nom: '1 BLOC',  jours: 1,  divisions: 6, labelEnfant: '-' },
   1: { niveau: 1, nom: '1 JOUR',  jours: 1,  divisions: 6, labelEnfant: 'Bloc de 4h' },
   2: { niveau: 2, nom: '6 JOURS', jours: 6,  divisions: 6, labelEnfant: 'Jour' },
@@ -29,8 +29,8 @@ export default function AgendaExtremeMinimalism() {
   const [activeBlock, setActiveBlock] = useState(0);
   
   const [sandboxes, setSandboxes] = useState<any[]>([]);
-const [activeSandboxId, setActiveSandboxId] = useState<string | null>(null);
-  const [parametres, setParametres] = useState({});
+  const [activeSandboxId, setActiveSandboxId] = useState<string | null>(null);
+  const [parametres, setParametres] = useState<any>({});
   const [rituels, setRituels] = useState<any[]>([]);
   const paramsRef = useRef({});
   const saveQueue = useRef({});
