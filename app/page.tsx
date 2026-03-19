@@ -71,32 +71,46 @@ const [activeSandboxId, setActiveSandboxId] = useState<string | null>(null);
     localStorage.setItem('fractal_sandbox', activeSandboxId || 'null');
   }, [niveau, activeDay, activeBlock, activeSandboxId, isReady]);
 
+  // CHARGEMENT DB
   useEffect(() => {
     if (session && isReady) {
-      Promise.all([fetch('/api/settings').then(res => res.json()), fetch('/api/rituals').then(res => res.json()), fetch('/api/nodedata').then(res => res.json())])
-      .then(([settingsData, ritualsData, nodesData]) => {
-        const loadedSandboxes = settingsData.sandboxes || [];
-        setSandboxes(loadedSandboxes);
-        if (activeSandboxId && !loadedSandboxes.some(sb => sb.id === activeSandboxId)) { setActiveSandboxId(null); setNiveau(6); }
+      Promise.all([
+        fetch('/api/settings').then(res => res.json()),
+        fetch('/api/rituals').then(res => res.json()),
+        fetch('/api/nodedata').then(res => res.json())
+      ]).then(([settingsData, ritualsData, nodesData]) => {
         
-        const validRituels = Array.isArray(ritualsData) ? ritualsData : [];
+        const loadedSandboxes: any[] = settingsData.sandboxes || [];
+        setSandboxes(loadedSandboxes);
+
+        // On a ajouté (sb: any)
+        if (activeSandboxId && !loadedSandboxes.some((sb: any) => sb.id === activeSandboxId)) {
+          setActiveSandboxId(null);
+          setNiveau(6);
+        }
+        
+        const validRituels: any[] = Array.isArray(ritualsData) ? ritualsData : [];
         setRituels(validRituels);
-        const validRitualIds = validRituels.map(r => r._id || r.id);
+        // On a ajouté (r: any)
+        const validRitualIds = validRituels.map((r: any) => r._id || r.id);
 
         if (Array.isArray(nodesData)) {
-          const formatted = {};
+          const formatted: any = {};
           let hasPhantoms = false;
-          const purgeUpdates = [];
+          const purgeUpdates: any[] = [];
 
-          nodesData.forEach(n => { 
-            const cleanTodos = (n.todos || []).filter(t => !t.inherited || validRitualIds.includes(t.sourceRitualId));
-            const cleanRituals = (n.activeRituals || []).filter(id => validRitualIds.includes(id));
+          // On a ajouté (n: any), (t: any), et (id: any)
+          nodesData.forEach((n: any) => { 
+            const cleanTodos = (n.todos || []).filter((t: any) => !t.inherited || validRitualIds.includes(t.sourceRitualId));
+            const cleanRituals = (n.activeRituals || []).filter((id: any) => validRitualIds.includes(id));
             if (cleanTodos.length !== (n.todos || []).length || cleanRituals.length !== (n.activeRituals || []).length) {
-              hasPhantoms = true; purgeUpdates.push({ nodeId: n.nodeId, todos: cleanTodos, activeRituals: cleanRituals });
+              hasPhantoms = true;
+              purgeUpdates.push({ nodeId: n.nodeId, todos: cleanTodos, activeRituals: cleanRituals });
             }
             formatted[n.nodeId] = { notes: n.notes || "", todos: cleanTodos, activeRituals: cleanRituals }; 
           });
-          setParametres(formatted); paramsRef.current = formatted; 
+          setParametres(formatted);
+          paramsRef.current = formatted; 
           if (hasPhantoms) fetch('/api/nodedata/bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ updates: purgeUpdates }) });
         }
       }).catch(err => console.error(err));
