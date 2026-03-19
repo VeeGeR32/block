@@ -128,12 +128,12 @@ const [activeSandboxId, setActiveSandboxId] = useState<string | null>(null);
     return () => clearInterval(interval);
   }, []);
 
-  const getDateFromIndex = (indexJour) => { const d = new Date(systemStartDate); d.setDate(d.getDate() + indexJour); return d; };
+  const getDateFromIndex = (indexJour: any) => { const d = new Date(systemStartDate); d.setDate(d.getDate() + indexJour); return d; };
   const getChunkStart = () => niveau < 6 ? Math.floor(activeDay / VUES[niveau].jours) * VUES[niveau].jours : 0;
   const chunkStart = getChunkStart();
 
   // FIX MAJEUR : L'ID DU NŒUD EST MAINTENANT STRICTEMENT LIÉ À LA SANDBOX
-  const getComputedNodeId = (sandboxId, niv, day, block = 0) => {
+  const getComputedNodeId = (sandboxId: any, niv: any, day: any, block: any = 0) => {
     const prefix = sandboxId ? `${sandboxId}_` : '';
     if (niv === 0) return `${prefix}lvl0-jour${day}-bloc${block}`;
     if (niv === 1) return `${prefix}lvl1-jour${day}`;
