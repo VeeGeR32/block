@@ -1,19 +1,53 @@
-// app/login/page.tsx
 "use client";
-import { useState } from "react";
+
+import { useState, useEffect } from "react";
 import { signIn } from "next-auth/react";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
-export default function LoginPage() {
+
+export default function LoginExtremeMinimalism() {
+  const router = useRouter();
+  const [step, setStep] = useState(0);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const router = useRouter();
+  
+  // Animation d'entrée et de transition (Warp)
+  const [warpStyle, setWarpStyle] = useState("opacity-0 blur-xl scale-[1.5]");
 
-  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {    e.preventDefault();
+  // Déclenche l'animation d'apparition au chargement
+  useEffect(() => {
+    setTimeout(() => setWarpStyle("opacity-100 blur-0 scale-100"), 100);
+  }, []);
+
+  const handleNext = () => {
+    if (step === 0 && email.trim() !== "") {
+      setError("");
+      setWarpStyle("opacity-0 blur-md scale-[1.1]");
+      setTimeout(() => {
+        setStep(1);
+        setWarpStyle("opacity-100 blur-0 scale-100");
+      }, 300);
+    } else if (step === 1 && password.trim() !== "") {
+      handleSubmit();
+    }
+  };
+
+  const handlePrev = () => {
+    if (step === 1) {
+      setError("");
+      setWarpStyle("opacity-0 blur-md scale-[0.9]");
+      setTimeout(() => {
+        setStep(0);
+        setWarpStyle("opacity-100 blur-0 scale-100");
+      }, 300);
+    }
+  };
+
+  const handleSubmit = async () => {
     setIsLoading(true);
     setError("");
+    setWarpStyle("opacity-50 blur-sm scale-100 animate-pulse"); // Effet de chargement
 
     const res = await signIn("credentials", {
       email,
@@ -22,59 +56,91 @@ export default function LoginPage() {
     });
 
     if (res?.error) {
-      setError("Identifiants incorrects.");
       setIsLoading(false);
+      setError("ACCÈS REFUSÉ");
+      setWarpStyle("opacity-100 blur-0 scale-100");
     } else {
-      router.push("/"); // Retour à la fractale !
+      // Animation de "Plongeon" vers l'application
+      setWarpStyle("opacity-0 blur-xl scale-[0.5] saturate-0");
+      setTimeout(() => {
+        router.push("/");
+      }, 600);
     }
   };
 
   return (
-    <main className="flex h-screen w-screen bg-white items-center justify-center font-sans">
-      <div className="w-full max-w-md p-8 border-4 border-black bg-white shadow-2xl">
-        <header className="mb-8 border-b-2 border-gray-100 pb-4">
-          <h1 className="text-3xl font-black uppercase tracking-tighter text-black">Connexion</h1>
-          <p className="text-xs font-mono text-gray-400 mt-1 tracking-widest uppercase">Initialisation du système</p>
-        </header>
-
-        <form onSubmit={handleSubmit} className="flex flex-col gap-6">
-          {error && <div className="bg-red-500 text-white text-xs font-bold p-3 uppercase tracking-widest">{error}</div>}
+    <main className="flex flex-col h-[100dvh] w-screen bg-black font-sans overflow-hidden text-white relative">
+      <div className={`flex-1 flex flex-col transition-all duration-500 ease-out ${warpStyle}`}>
+        
+        <div className="flex-1 w-full flex flex-col items-center justify-center p-8 max-w-[800px] mx-auto relative">
           
-          <div className="flex flex-col gap-2">
-            <label className="text-[10px] font-bold uppercase tracking-widest text-gray-500">Identifiant (Email)</label>
-            <input 
-              type="email" 
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="w-full border-b-2 border-gray-200 py-2 text-sm outline-none focus:border-black transition-colors"
-            />
-          </div>
+          {/* ÉTAPE 0 : EMAIL */}
+          {step === 0 && (
+            <div className="flex flex-col items-center gap-8 w-full animate-fade-in">
+              <span className="text-white/50 font-mono tracking-widest uppercase text-xs md:text-sm">Identification</span>
+              <input 
+                autoFocus 
+                type="email" 
+                value={email} 
+                onChange={(e) => setEmail(e.target.value)} 
+                onKeyDown={(e) => e.key === 'Enter' && handleNext()} 
+                className="w-full bg-transparent text-4xl md:text-7xl font-black text-white text-center outline-none tracking-tighter placeholder:text-white/10 transition-all focus:placeholder:text-transparent" 
+                placeholder="EMAIL" 
+                disabled={isLoading}
+              />
+            </div>
+          )}
 
-          <div className="flex flex-col gap-2">
-            <label className="text-[10px] font-bold uppercase tracking-widest text-gray-500">Mot de passe</label>
-            <input 
-              type="password" 
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full border-b-2 border-gray-200 py-2 text-sm outline-none focus:border-black transition-colors"
-            />
-          </div>
+          {/* ÉTAPE 1 : MOT DE PASSE */}
+          {step === 1 && (
+            <div className="flex flex-col items-center gap-8 w-full animate-fade-in">
+              <span className="text-white/50 font-mono tracking-widest uppercase text-xs md:text-sm">Clé d'accès</span>
+              <input 
+                autoFocus 
+                type="password" 
+                value={password} 
+                onChange={(e) => setPassword(e.target.value)} 
+                onKeyDown={(e) => e.key === 'Enter' && handleNext()} 
+                className="w-full bg-transparent text-5xl md:text-7xl font-black text-white text-center outline-none tracking-[0.3em] placeholder:text-white/10 transition-all focus:placeholder:text-transparent" 
+                placeholder="••••••••" 
+                disabled={isLoading}
+              />
+            </div>
+          )}
 
-          <button 
-            type="submit" 
-            disabled={isLoading}
-            className={`mt-4 w-full bg-black text-white py-4 text-xs font-bold uppercase tracking-widest transition-all ${isLoading ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-800'}`}
-          >
-            {isLoading ? "Vérification..." : "Accéder à la fractale"}
-          </button>
-        </form>
-        <div className="mt-6 text-center">
-          <Link href="/register" className="text-[10px] font-bold uppercase tracking-widest text-[#F05A28] hover:text-black border-b border-transparent hover:border-black pb-1 transition-all">
-            Créer un nouveau système
-          </Link>
+          {/* AFFICHAGE DES ERREURS */}
+          {error && (
+            <div className="absolute bottom-10 md:bottom-20 text-red-500 font-mono text-xs md:text-sm tracking-[0.3em] uppercase bg-red-500/10 px-6 py-3 border border-red-500/20 shadow-[0_0_20px_rgba(239,68,68,0.2)] animate-fade-in">
+              [ {error} ]
+            </div>
+          )}
         </div>
+
+        {/* CONTRÔLES / BOUTONS */}
+        <div className="w-full flex justify-between p-8 md:p-12 text-xs md:text-sm font-mono uppercase tracking-[0.3em] font-bold text-white/50">
+           <button 
+             onClick={handlePrev} 
+             disabled={isLoading}
+             className={`transition-colors py-4 px-6 md:px-8 border border-transparent ${step === 0 ? 'opacity-0 pointer-events-none' : 'hover:text-white hover:border-white/20'}`}
+           >
+             Précédent
+           </button>
+           
+           <button 
+             onClick={handleNext} 
+             disabled={isLoading || (step === 0 && email.trim() === '') || (step === 1 && password.trim() === '')}
+             className={`transition-colors py-4 px-6 md:px-8 border ${
+               isLoading 
+                 ? 'border-white/10 text-white/30 animate-pulse' 
+                 : (step === 0 && email.trim() === '') || (step === 1 && password.trim() === '')
+                    ? 'border-white/10 text-white/20 pointer-events-none'
+                    : 'border-white/20 hover:bg-white hover:text-black text-white'
+             }`}
+           >
+             {isLoading ? 'Vérification...' : (step === 1 ? 'Accéder' : 'Suivant')}
+           </button>
+        </div>
+
       </div>
     </main>
   );
