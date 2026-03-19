@@ -5,7 +5,15 @@ import { useSession, signOut } from 'next-auth/react';
 const C_BLUE = '#044389';
 const C_ORANGE = '#EC4E20';
 
-const VUES: any = {
+interface Vue {
+  niveau: number;
+  nom: string;
+  jours: number | null;
+  divisions: number | null;
+  labelEnfant: string;
+}
+
+const VUES: Record<number, Vue> = {
   0: { niveau: 0, nom: '1 BLOC',  jours: 1,  divisions: 6, labelEnfant: '-' },
   1: { niveau: 1, nom: '1 JOUR',  jours: 1,  divisions: 6, labelEnfant: 'Bloc de 4h' },
   2: { niveau: 2, nom: '6 JOURS', jours: 6,  divisions: 6, labelEnfant: 'Jour' },
@@ -15,25 +23,63 @@ const VUES: any = {
   6: { niveau: 6, nom: 'BLOCK', jours: null, divisions: null, labelEnfant: 'Dimension' }, // FIX : Renommé en BLOCK
 };
 
-const formatDate = (date: any) => date ? date.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: '2-digit' }) : '';
-const formatHeures = (blocIndex: any) => `${(blocIndex * 4).toString().padStart(2, '0')}h00 - ${((blocIndex + 1) * 4).toString().padStart(2, '0')}h00`;
+interface Sandbox {
+  id: string;
+  userId?: string;
+  nom: string;
+  couleur: string;
+  startDate: string;
+}
+
+interface Ritual {
+  _id?: string;
+  id?: number;
+  userId?: string;
+  niveau: number;
+  targetNiveau: number;
+  nom: string;
+  pattern: any; // Peut être plus spécifique si nécessaire
+  sandboxId: string | null;
+  elements: any[];
+}
+
+interface Todo {
+  id: number;
+  text: string;
+  done: boolean;
+  inherited?: boolean;
+  sandboxId?: string | null;
+  sourceRitualId?: string;
+  sourceRitualName?: string;
+}
+
+interface NodeData {
+  userId: string;
+  nodeId: string;
+  notes: string;
+  todos: Todo[];
+  sandboxId: string;
+  activeRituals: string[];
+}
+
+const formatDate = (date: Date | null | undefined) => date ? date.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: '2-digit' }) : '';
+const formatHeures = (blocIndex: number) => `${(blocIndex * 4).toString().padStart(2, '0')}h00 - ${((blocIndex + 1) * 4).toString().padStart(2, '0')}h00`;
 
 export default function AgendaExtremeMinimalism() {
   const { data: session, status } = useSession();
   
   const [isReady, setIsReady] = useState(false);
-  const [currentTimeMs, setCurrentTimeMs] = useState(new Date().getTime());
   
   const [niveau, setNiveau] = useState(6);
   const [activeDay, setActiveDay] = useState(0);
   const [activeBlock, setActiveBlock] = useState(0);
   
-  const [sandboxes, setSandboxes] = useState<any[]>([]);
+  const [sandboxes, setSandboxes] = useState<Sandbox[]>([]);
   const [activeSandboxId, setActiveSandboxId] = useState<string | null>(null);
-  const [parametres, setParametres] = useState<any>({});
-  const [rituels, setRituels] = useState<any[]>([]);
-  const paramsRef = useRef({});
-  const saveQueue = useRef({});
+  const [parametres, setParametres] = useState<Record<string, NodeData>>({});
+  const [rituels, setRituels] = useState<Ritual[]>([]);
+  const paramsRef = useRef<Record<string, NodeData>>({});
+  const saveQueue = useRef<Record<string, NodeJS.Timeout>>({});
   
   const [zoomStyle, setZoomStyle] = useState("scale-100 opacity-100 transition-all duration-500 ease-out");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -41,8 +87,24 @@ export default function AgendaExtremeMinimalism() {
   // ——————————————————————————————————————————————————————————————————————
   // ÉTAT DU WIZARD PLEIN ÉCRAN
   // ——————————————————————————————————————————————————————————————————————
-  const defaultWizardData = { nom: '', couleur: C_BLUE, date: new Date().toISOString().split('T')[0], targetNiveau: 0, pattern: { 4: [], 3: [], 2: [], 1: [], 0: [] }, elements: [] };
-  const [wizard, setWizard] = useState({ active: false, type: 'DIMENSION', step: 0, data: defaultWizardData });
+  interface WizardElement { itemType: string; text: string; }
+  interface WizardData {
+    nom: string;
+    couleur: string;
+    date: string;
+    targetNiveau: number;
+    pattern: Record<number, number[]>;
+    elements: WizardElement[];
+  }
+  interface WizardState {
+    active: boolean;
+    type: string;
+    step: number;
+    data: WizardData;
+  }
+
+  const defaultWizardData: WizardData = { nom: '', couleur: C_BLUE, date: new Date().toISOString().split('T')[0], targetNiveau: 0, pattern: { 4: [], 3: [], 2: [], 1: [], 0: [] }, elements: [] };
+  const [wizard, setWizard] = useState<WizardState>({ active: false, type: 'DIMENSION', step: 0, data: defaultWizardData });
   const [wizTaskInput, setWizTaskInput] = useState("");
 
   const activeSandbox = activeSandboxId ? sandboxes.find(sb => sb.id === activeSandboxId) : null;
@@ -80,34 +142,34 @@ export default function AgendaExtremeMinimalism() {
         fetch('/api/nodedata').then(res => res.json())
       ]).then(([settingsData, ritualsData, nodesData]) => {
         
-        const loadedSandboxes: any[] = settingsData.sandboxes || [];
+        const loadedSandboxes: Sandbox[] = settingsData.sandboxes || [];
         setSandboxes(loadedSandboxes);
 
         // On a ajouté (sb: any)
-        if (activeSandboxId && !loadedSandboxes.some((sb: any) => sb.id === activeSandboxId)) {
+        if (activeSandboxId && !loadedSandboxes.some((sb: Sandbox) => sb.id === activeSandboxId)) {
           setActiveSandboxId(null);
           setNiveau(6);
         }
         
-        const validRituels: any[] = Array.isArray(ritualsData) ? ritualsData : [];
+        const validRituels: Ritual[] = Array.isArray(ritualsData) ? ritualsData : [];
         setRituels(validRituels);
         // On a ajouté (r: any)
-        const validRitualIds = validRituels.map((r: any) => r._id || r.id);
+        const validRitualIds = validRituels.map((r: Ritual) => r._id || r.id);
 
         if (Array.isArray(nodesData)) {
-          const formatted: any = {};
+          const formatted: Record<string, NodeData> = {};
           let hasPhantoms = false;
           const purgeUpdates: any[] = [];
 
           // On a ajouté (n: any), (t: any), et (id: any)
-          nodesData.forEach((n: any) => { 
+          nodesData.forEach((n: NodeData) => {
             const cleanTodos = (n.todos || []).filter((t: any) => !t.inherited || validRitualIds.includes(t.sourceRitualId));
-            const cleanRituals = (n.activeRituals || []).filter((id: any) => validRitualIds.includes(id));
+            const cleanRituals = (n.activeRituals || []).filter((id: string) => validRitualIds.includes(id));
             if (cleanTodos.length !== (n.todos || []).length || cleanRituals.length !== (n.activeRituals || []).length) {
               hasPhantoms = true;
               purgeUpdates.push({ nodeId: n.nodeId, todos: cleanTodos, activeRituals: cleanRituals });
             }
-            formatted[n.nodeId] = { notes: n.notes || "", todos: cleanTodos, activeRituals: cleanRituals }; 
+            formatted[n.nodeId] = { ...n, todos: cleanTodos, activeRituals: cleanRituals }; 
           });
           setParametres(formatted);
           paramsRef.current = formatted; 
@@ -115,7 +177,7 @@ export default function AgendaExtremeMinimalism() {
         }
       }).catch(err => console.error(err));
     }
-  }, [session, isReady]);
+  }, [session, isReady, activeSandboxId]);
 
   const MAINTENANT = new Date();
   const startMidnight = new Date(systemStartDate).setHours(0, 0, 0, 0);
@@ -124,20 +186,20 @@ export default function AgendaExtremeMinimalism() {
   const indexBlocAujourdhui = Math.floor(MAINTENANT.getHours() / 4);
 
   useEffect(() => {
-    const interval = setInterval(() => setCurrentTimeMs(new Date().getTime()), 60000);
+    const interval = setInterval(() => {}, 60000);
     return () => clearInterval(interval);
   }, []);
 
-  const getDateFromIndex = (indexJour: any) => { const d = new Date(systemStartDate); d.setDate(d.getDate() + indexJour); return d; };
-  const getChunkStart = () => niveau < 6 ? Math.floor(activeDay / VUES[niveau].jours) * VUES[niveau].jours : 0;
+  const getDateFromIndex = (indexJour: number) => { const d = new Date(systemStartDate); d.setDate(d.getDate() + indexJour); return d; };
+  const getChunkStart = () => niveau < 6 && VUES[niveau].jours ? Math.floor(activeDay / VUES[niveau].jours) * VUES[niveau].jours : 0;
   const chunkStart = getChunkStart();
 
   // FIX MAJEUR : L'ID DU NŒUD EST MAINTENANT STRICTEMENT LIÉ À LA SANDBOX
-  const getComputedNodeId = (sandboxId: any, niv: any, day: any, block: any = 0) => {
+  const getComputedNodeId = (sandboxId: string | null, niv: number, day: number, block: number = 0) => {
     const prefix = sandboxId ? `${sandboxId}_` : '';
     if (niv === 0) return `${prefix}lvl0-jour${day}-bloc${block}`;
     if (niv === 1) return `${prefix}lvl1-jour${day}`;
-    return `${prefix}lvl${niv}-start${Math.floor(day / VUES[niv].jours) * VUES[niv].jours}`;
+    return `${prefix}lvl${niv}-start${Math.floor(day / (VUES[niv].jours || 1)) * (VUES[niv].jours || 1)}`;
   };
 
   const nodeId = niveau < 6 ? getComputedNodeId(activeSandboxId, niveau, activeDay, activeBlock) : 'ROOT';
@@ -146,7 +208,7 @@ export default function AgendaExtremeMinimalism() {
   const filteredTodos = nodeData.todos || [];
   const filteredRituels = activeSandboxId ? rituels.filter(r => r.niveau === niveau && r.sandboxId === activeSandboxId) : [];
 
-  const setNodeData = (newDataUpdater, targetNodeId = nodeId) => {
+  const setNodeData = (newDataUpdater: ((current: NodeData) => NodeData) | NodeData, targetNodeId = nodeId) => {
     if (niveau === 6) return;
     const currentNode = paramsRef.current[targetNodeId] || { notes: '', todos: [], activeRituals: [] };
     const resolvedData = typeof newDataUpdater === 'function' ? newDataUpdater(currentNode) : newDataUpdater;
@@ -158,14 +220,14 @@ export default function AgendaExtremeMinimalism() {
     if (session) {
       clearTimeout(saveQueue.current[targetNodeId]);
       saveQueue.current[targetNodeId] = setTimeout(() => {
-        fetch('/api/nodedata', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nodeId: targetNodeId, ...updatedNode }) });
+        fetch('/api/nodedata', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updatedNode) });
       }, 500);
     }
   };
 
-  const handleNotesChange = (e) => setNodeData({ notes: e.target.value });
+  const handleNotesChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => setNodeData((current) => ({ ...current, notes: e.target.value }));
 
-  const naviguer = (nouveauNiveau, cibleJour = null, cibleBloc = null, sandboxCibleId = null) => {
+  const naviguer = (nouveauNiveau: number, cibleJour: number | null = null, cibleBloc: number | null = null, sandboxCibleId: string | null = null) => {
     if (nouveauNiveau === niveau || nouveauNiveau < 0 || nouveauNiveau > 6) return;
     if (nouveauNiveau === 6) {
       setZoomStyle(`transition-all duration-400 ease-in-out opacity-0 scale-[0.8]`);
@@ -190,7 +252,7 @@ export default function AgendaExtremeMinimalism() {
   // ——————————————————————————————————————————————————————————————————————
   // LOGIQUE WIZARD PLEIN ÉCRAN
   // ——————————————————————————————————————————————————————————————————————
-  const startWizard = (type) => {
+  const startWizard = (type: string) => {
     setIsSidebarOpen(false);
     setWizard({ active: true, type, step: 0, data: { ...defaultWizardData, targetNiveau: Math.max(0, niveau - 1) } });
   };
@@ -200,7 +262,7 @@ export default function AgendaExtremeMinimalism() {
   const submitWizard = async () => {
     if (wizard.type === 'DIMENSION') {
       if (!wizard.data.nom.trim()) return;
-      const newSb = { id: `sb_${Date.now()}`, nom: wizard.data.nom.toUpperCase(), couleur: wizard.data.couleur, startDate: new Date(wizard.data.date) };
+      const newSb = { id: `sb_${Date.now()}`, nom: wizard.data.nom.toUpperCase(), couleur: wizard.data.couleur, startDate: new Date(wizard.data.date).toISOString() };
       const updated = [...sandboxes, newSb];
       setSandboxes(updated);
       if (session) await fetch('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sandboxes: updated }) });
@@ -215,54 +277,33 @@ export default function AgendaExtremeMinimalism() {
     closeWizard();
   };
 
-  const deleteSandbox = async (id, e) => {
-    e.stopPropagation();
-    if (confirm("Désintégrer cet univers ? (Irréversible)")) {
-      const updated = sandboxes.filter(sb => sb.id !== id);
-      setSandboxes(updated);
-      if (session) await fetch('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sandboxes: updated }) });
-      
-      // PURGE ABSOLUE : Détruit tous les nœuds de cette Sandbox
-      const updates = [];
-      Object.keys(paramsRef.current).forEach(nodeKey => {
-        if (nodeKey.startsWith(id + '_')) {
-          paramsRef.current[nodeKey] = { notes: '', todos: [], activeRituals: [] };
-          updates.push({ nodeId: nodeKey, todos: [], activeRituals: [] });
-        }
-      });
-      setParametres({ ...paramsRef.current });
-      setRituels(rituels.filter(r => r.sandboxId !== id));
-      if (session && updates.length > 0) fetch('/api/nodedata/bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ updates }) });
-    }
-  };
-
-  const generateTargetNodeIds = (baseNiveau, baseStartDay, pattern, targetNiveau) => {
-    let currentDays = [baseStartDay];
+  const generateTargetNodeIds = (baseNiveau: number, baseStartDay: number, pattern: any, targetNiveau?: number) => {
+    let currentDays: number[] = [baseStartDay];
     const safeTargetNiveau = targetNiveau || 0;
     const safePattern = pattern || {};
     for (let niv = baseNiveau - 1; niv >= Math.max(1, safeTargetNiveau); niv--) {
-      const nextDays = [];
-      const divSize = VUES[niv].jours;
+      const nextDays: number[] = [];
+      const divSize = VUES[niv].jours || 1;
       const chunks = VUES[niv + 1].divisions;
       currentDays.forEach(day => {
-        const selectedFractions = safePattern[niv] || [];
-        const fractionsToUse = selectedFractions.length === 0 ? Array.from({length: chunks}, (_, i) => i) : selectedFractions;
+        const selectedFractions: number[] = safePattern[niv] || [];
+        const fractionsToUse: number[] = selectedFractions.length === 0 ? Array.from({length: chunks || 0}, (_, i) => i) : selectedFractions;
         fractionsToUse.forEach(i => nextDays.push(day + i * divSize));
       });
       currentDays = nextDays;
     }
     if (safeTargetNiveau > 0) return currentDays.map(day => getComputedNodeId(activeSandboxId, safeTargetNiveau, day, 0));
-    const nodeIds = [];
+    const nodeIds: string[] = [];
     currentDays.forEach(day => {
-      const selectedBlocks = safePattern[0] || [];
-      const blocksToUse = selectedBlocks.length === 0 ? [0,1,2,3,4,5] : selectedBlocks;
+      const selectedBlocks: number[] = safePattern[0] || [];
+      const blocksToUse: number[] = selectedBlocks.length === 0 ? [0,1,2,3,4,5] : selectedBlocks;
       blocksToUse.forEach(b => nodeIds.push(getComputedNodeId(activeSandboxId, 0, day, b)));
     });
     return nodeIds;
   };
 
-  const toggleRitualActivation = async (rituel) => {
-    const rituelId = rituel._id || rituel.id;
+  const toggleRitualActivation = async (rituel: Ritual) => {
+    const rituelId = (rituel._id || rituel.id) as string;
     const currentNode = paramsRef.current[nodeId] || { activeRituals: [] };
     const isActivating = !(currentNode.activeRituals || []).includes(rituelId);
 
@@ -289,11 +330,11 @@ export default function AgendaExtremeMinimalism() {
     if (session) await fetch('/api/nodedata/bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ updates }) });
   };
 
-  const supprimerRituelBase = async (rituel, e) => {
+  const supprimerRituelBase = async (rituel: Ritual, e: React.MouseEvent) => {
     e.stopPropagation();
     if (confirm("Désintégrer ce modèle et toutes ses tâches ?")) {
-      const rituelId = rituel._id || rituel.id;
-      const updates = [];
+      const rituelId = (rituel._id || rituel.id) as string;
+      const updates: any[] = [];
       Object.keys(paramsRef.current).forEach(nodeKey => {
         const node = paramsRef.current[nodeKey];
         let hasChanges = false;
@@ -317,21 +358,21 @@ export default function AgendaExtremeMinimalism() {
   };
 
   const [localInputValue, setLocalInputValue] = useState("");
-  const handleAddLocalTodo = (e) => {
+  const handleAddLocalTodo = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && localInputValue.trim() !== '') {
       if (!activeSandboxId) return;
-      setNodeData({ todos: [...(nodeData.todos||[]), { id: Date.now(), text: localInputValue.trim(), done: false, inherited: false, sandboxId: activeSandboxId }] });
+      setNodeData((current) => ({ ...current, todos: [...(current.todos || []), { id: Date.now(), text: localInputValue.trim(), done: false, inherited: false, sandboxId: activeSandboxId }] }));
       setLocalInputValue("");
     }
   };
-  const toggleTodo = (id) => setNodeData({ todos: (nodeData.todos||[]).map(t => t.id === id ? { ...t, done: !t.done } : t) });
-  const deleteTodo = (id) => setNodeData({ todos: (nodeData.todos||[]).filter(t => t.id !== id && !t.inherited) });
+  const toggleTodo = (id: number) => setNodeData((current) => ({ ...current, todos: (current.todos || []).map(t => t.id === id ? { ...t, done: !t.done } : t) }));
+  const deleteTodo = (id: number) => setNodeData((current) => ({ ...current, todos: (current.todos || []).filter(t => t.id !== id && !t.inherited) }));
 
-  const hasActiveTasks = (blocStartDay, checkNiveau) => {
+  const hasActiveTasks = (blocStartDay: number, checkNiveau: number) => {
     if (!activeSandboxId) return false;
     const checkNodeId = getComputedNodeId(activeSandboxId, checkNiveau, blocStartDay, 0);
     const data = parametres[checkNodeId];
-    return data && (data.todos || []).some(t => !t.done);
+    return data && (data.todos || []).some((t: any) => !t.done);
   };
 
   const currentBgColorHex = (() => {
@@ -339,7 +380,8 @@ export default function AgendaExtremeMinimalism() {
     let past = 0; let future = 0;
     if (niveau >= 3) {
       [0, 1, 2, 3].forEach(i => {
-        const blocEndDay = chunkStart + (i * (VUES[niveau].jours / 4)) + (VUES[niveau].jours / 4) - 1;
+        const jours = VUES[niveau].jours || 0;
+        const blocEndDay = chunkStart + (i * (jours / 4)) + (jours / 4) - 1;
         blocEndDay < indexJourAujourdhui ? past++ : future++;
       });
     } else if (niveau === 2) {
@@ -380,8 +422,9 @@ export default function AgendaExtremeMinimalism() {
       return (
         <div className="grid grid-cols-2 grid-rows-2 gap-4 md:gap-8 h-full aspect-square px-4 pb-8 pt-28 mx-auto w-full max-w-[85vh]">
           {[0, 1, 2, 3].map(i => {
-            const blocStartDay = chunkStart + (i * (VUES[niveau].jours / 4));
-            const blocEndDay = blocStartDay + (VUES[niveau].jours / 4) - 1;
+            const jours = VUES[niveau].jours || 0;
+            const blocStartDay = chunkStart + (i * (jours / 4));
+            const blocEndDay = blocStartDay + (jours / 4) - 1;
             const isTodayInside = indexJourAujourdhui >= blocStartDay && indexJourAujourdhui <= blocEndDay;
             const isPast = blocEndDay < indexJourAujourdhui;
             const isBusy = hasActiveTasks(blocStartDay, niveau - 1);
@@ -393,7 +436,7 @@ export default function AgendaExtremeMinimalism() {
                    hover:scale-[1.03] hover:z-20 hover:shadow-2xl rounded-sm
                    ${isTodayInside ? 'ring-1 ring-white/60 z-10' : 'border border-transparent hover:border-white/20'}`}>
                 
-                <span className="text-4xl md:text-7xl font-black tracking-tighter opacity-90 group-hover:opacity-100 transition-opacity">{VUES[niveau].jours / 4}</span>
+                <span className="text-4xl md:text-7xl font-black tracking-tighter opacity-90 group-hover:opacity-100 transition-opacity">{(VUES[niveau].jours || 0) / 4}</span>
                 <span className="text-[10px] md:text-xs font-mono mt-3 text-white/60 tracking-widest uppercase opacity-0 group-hover:opacity-100 transition-opacity">{formatDate(getDateFromIndex(blocStartDay))} - {formatDate(getDateFromIndex(blocEndDay))}</span>
                 
                 <div className="absolute top-3 right-3 md:top-4 md:right-4 flex gap-2">
@@ -519,7 +562,7 @@ export default function AgendaExtremeMinimalism() {
                           {[...Array(numBoutons)].map((_, i) => {
                             const isSelected = (wizard.data.pattern[couche.niveau] || []).includes(i);
                             return <button key={i} onClick={() => {
-                              const current = wizard.data.pattern[couche.niveau] || [];
+                              const current: number[] = wizard.data.pattern[couche.niveau] || [];
                               const updated = current.includes(i) ? current.filter(x => x !== i) : [...current, i].sort();
                               setWizard(prev => ({...prev, data: {...prev.data, pattern: {...prev.data.pattern, [couche.niveau]: updated}}}));
                             }} className={`text-sm font-mono px-4 py-2 transition-colors ${isSelected ? 'bg-white text-black' : 'bg-white/10 text-white/50 hover:bg-white/20'}`}>{i + 1}</button>;
@@ -639,7 +682,8 @@ export default function AgendaExtremeMinimalism() {
 
                 <div className="flex flex-col gap-2 md:gap-3">
                   {filteredRituels.map(r => {
-                    const isActive = (nodeData.activeRituals || []).includes(r._id || r.id);
+                    const ritualId = (r._id || r.id) as string;
+                    const isActive = (nodeData.activeRituals || []).includes(ritualId);
                     return (
                       <div key={r._id || r.id} className="flex items-center justify-between group">
                         <div className="flex items-center gap-2 md:gap-3 cursor-pointer" onClick={() => toggleRitualActivation(r)}>

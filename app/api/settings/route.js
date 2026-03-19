@@ -4,7 +4,7 @@ import connectMongo from '@/lib/mongodb';
 import User from '@/models/User';
 import { getServerSession } from "next-auth/next";
 
-export async function GET(req) {
+export async function GET() {
   const session = await getServerSession();
   if (!session?.user?.email) return NextResponse.json({ error: "Non autorisé" }, { status: 401 });
   
