@@ -29,8 +29,7 @@ export default function AgendaExtremeMinimalism() {
   const [activeBlock, setActiveBlock] = useState(0);
   
   const [sandboxes, setSandboxes] = useState<any[]>([]);
-  const [activeSandboxId, setActiveSandboxId] = useState(null);
-
+const [activeSandboxId, setActiveSandboxId] = useState<string | null>(null);
   const [parametres, setParametres] = useState({});
   const [rituels, setRituels] = useState<any[]>([]);
   const paramsRef = useRef({});
