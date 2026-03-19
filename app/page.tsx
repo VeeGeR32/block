@@ -28,11 +28,11 @@ export default function AgendaExtremeMinimalism() {
   const [activeDay, setActiveDay] = useState(0);
   const [activeBlock, setActiveBlock] = useState(0);
   
-  const [sandboxes, setSandboxes] = useState([]);
+  const [sandboxes, setSandboxes] = useState<any[]>([]);
   const [activeSandboxId, setActiveSandboxId] = useState(null);
 
   const [parametres, setParametres] = useState({});
-  const [rituels, setRituels] = useState([]); 
+  const [rituels, setRituels] = useState<any[]>([]);
   const paramsRef = useRef({});
   const saveQueue = useRef({});
   
