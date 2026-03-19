@@ -15,8 +15,8 @@ const VUES = {
   6: { niveau: 6, nom: 'BLOCK', jours: null, divisions: null, labelEnfant: 'Dimension' }, // FIX : Renommé en BLOCK
 };
 
-const formatDate = (date) => date ? date.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: '2-digit' }) : '';
-const formatHeures = (blocIndex) => `${(blocIndex * 4).toString().padStart(2, '0')}h00 - ${((blocIndex + 1) * 4).toString().padStart(2, '0')}h00`;
+const formatDate = (date: any) => date ? date.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: '2-digit' }) : '';
+const formatHeures = (blocIndex: any) => `${(blocIndex * 4).toString().padStart(2, '0')}h00 - ${((blocIndex + 1) * 4).toString().padStart(2, '0')}h00`;
 
 export default function AgendaExtremeMinimalism() {
   const { data: session, status } = useSession();
