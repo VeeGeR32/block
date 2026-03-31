@@ -12,9 +12,11 @@ interface Vue { niveau: number; nom: string; jours: number | null; divisions: nu
 
 interface Sandbox {
   id: string; userId?: string; nom: string; couleur: string; startDate: string;
-  // Système vitalité
-  vitalite: number; jokers: number; isFrozenUntil: string | null;
-  lastEntropyDay: number; lastHarvestDay: number;
+  // Système Sigil
+  hp: number;           // 0–100 : énergie quotidienne
+  xp: number;           // 0–∞  : expérience cumulée
+  lastUpdateDay: number; // index jour relatif à startDate pour le calcul d'entropie
+  achievements: string[]; // IDs des succès déverrouillés
 }
 
 interface Ritual {
@@ -78,16 +80,262 @@ const deepClonePattern = (p: Record<number, number[]>): Record<number, number[]>
 };
 const emptyPattern = (): Record<number, number[]> => ({ 5: [], 4: [], 3: [], 2: [], 1: [], 0: [] });
 
-const defaultVitality = () => ({ vitalite: 50, jokers: 0, isFrozenUntil: null, lastEntropyDay: 0, lastHarvestDay: 0 });
+const defaultSigilStats = (): Pick<Sandbox, 'hp' | 'xp' | 'lastUpdateDay' | 'achievements'> =>
+  ({ hp: 50, xp: 0, lastUpdateDay: 0, achievements: [] });
 
-// Vitalité → classes CSS Tailwind
-const getVitalityClasses = (v: number) => {
-  if (v < 30) return 'grayscale opacity-40';
-  if (v > 70) return 'saturate-150 brightness-110';
-  return '';
+// ─── Moteur Audio (Web Audio API — aucun fichier externe) ─────────────────────
+let _audioCtx: AudioContext | null = null;
+const getAudioCtx = (): AudioContext | null => {
+  if (typeof window === 'undefined') return null;
+  try {
+    if (!_audioCtx) _audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    return _audioCtx;
+  } catch { return null; }
 };
-const getVitalityStyle = (sb: Sandbox): React.CSSProperties =>
-  sb.vitalite > 70 ? { boxShadow: `0 0 24px ${sb.couleur}88` } : {};
+const playNote = (freq: number, dur: number, type: OscillatorType = 'sine', vol = 0.22, delay = 0) => {
+  const ctx = getAudioCtx(); if (!ctx) return;
+  try {
+    const t = ctx.currentTime + delay;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.type = type; osc.frequency.setValueAtTime(freq, t);
+    gain.gain.setValueAtTime(0, t);
+    gain.gain.linearRampToValueAtTime(vol, t + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    osc.start(t); osc.stop(t + dur + 0.05);
+  } catch {}
+};
+const Sounds = {
+  taskComplete: () => { playNote(523, 0.1); playNote(659, 0.12, 'sine', 0.2, 0.07); playNote(784, 0.22, 'sine', 0.18, 0.14); },
+  taskUncheck:  () => { playNote(400, 0.1, 'sine', 0.15); playNote(280, 0.18, 'sine', 0.12, 0.09); },
+  levelUp:      () => { [261,329,392,523,659].forEach((f,i) => playNote(f, 0.4, 'sine', 0.28, i * 0.08)); },
+  achievement:  () => { [523,659,784,1047].forEach((f,i) => playNote(f, 0.5, 'triangle', 0.32, i * 0.07)); },
+  hpLow:        () => { playNote(180, 0.6, 'sawtooth', 0.1); playNote(160, 0.5, 'sawtooth', 0.08, 0.25); },
+  hpRecover:    () => { playNote(440, 0.18, 'sine', 0.14); playNote(550, 0.28, 'sine', 0.14, 0.1); },
+  malus:        () => { playNote(220, 0.4, 'sawtooth', 0.1); },
+};
+
+// ─── Succès / Achievements ────────────────────────────────────────────────────
+export interface AchievementDef {
+  id: string; nom: string; description: string; icon: string;
+  rarity: 'common' | 'rare' | 'epic' | 'legendary';
+}
+export const ACHIEVEMENTS: AchievementDef[] = [
+  // Tâches
+  { id: 'first_task',  nom: 'Premier Pas',      description: 'Compléter votre première tâche', icon: '◆', rarity: 'common'    },
+  { id: 'tasks_10',    nom: 'En Route',          description: '10 tâches accomplies',           icon: '◈', rarity: 'common'    },
+  { id: 'tasks_50',    nom: 'Marathon',           description: '50 tâches accomplies',           icon: '⬡', rarity: 'rare'      },
+  { id: 'tasks_100',   nom: 'Centurion',          description: '100 tâches accomplies',          icon: '⬢', rarity: 'rare'      },
+  { id: 'tasks_500',   nom: 'Légende',            description: '500 tâches accomplies',          icon: '★', rarity: 'epic'      },
+  // XP / Niveau
+  { id: 'xp_100',      nom: 'Éveil',              description: '100 XP atteints',                icon: '◉', rarity: 'common'    },
+  { id: 'xp_500',      nom: 'Ascension',          description: '500 XP atteints',                icon: '◎', rarity: 'rare'      },
+  { id: 'xp_1000',     nom: 'Transmutation',      description: '1 000 XP atteints',              icon: '✦', rarity: 'epic'      },
+  { id: 'xp_5000',     nom: 'Divinité',           description: '5 000 XP atteints',              icon: '✧', rarity: 'legendary' },
+  // HP
+  { id: 'hp_max',      nom: 'Plénitude',          description: 'Atteindre 100 HP',               icon: '♦', rarity: 'rare'      },
+  { id: 'survivor',    nom: 'Survivant',          description: 'Remonter à 50 HP depuis < 10',   icon: '♥', rarity: 'epic'      },
+  // Streak
+  { id: 'streak_7',    nom: 'Semaine de Feu',     description: '7 jours de streak',              icon: '▲', rarity: 'common'    },
+  { id: 'streak_30',   nom: 'Mois de Fer',        description: '30 jours de streak',             icon: '▼', rarity: 'rare'      },
+  { id: 'streak_100',  nom: 'Implacable',         description: '100 jours de streak',            icon: '▽', rarity: 'legendary' },
+  // Notes
+  { id: 'notes_10',    nom: 'Chroniqueur',        description: '10 logs rédigés',                icon: '□', rarity: 'common'    },
+  { id: 'notes_50',    nom: 'Archiviste',         description: '50 logs rédigés',                icon: '■', rarity: 'rare'      },
+  // Rituels
+  { id: 'ritual_1',    nom: 'Ritualiste',         description: 'Créer votre premier rituel',     icon: '○', rarity: 'common'    },
+  { id: 'ritual_5',    nom: 'Architecte',         description: '5 rituels dans une dimension',   icon: '◯', rarity: 'rare'      },
+];
+export const ACHIEVEMENT_MAP: Record<string, AchievementDef> =
+  Object.fromEntries(ACHIEVEMENTS.map(a => [a.id, a]));
+
+const RARITY_COLOR: Record<string, string> = {
+  common: '#888', rare: '#5599ff', epic: '#cc44ff', legendary: '#ffaa00',
+};
+
+// ─── Composant SigilAvatar — Créature procédurale concrète ───────────────────
+const SigilAvatar: React.FC<{ xp: number; hp: number; color: string; size?: number; animate?: boolean }> = ({
+  xp, hp, color, size = 100, animate = true,
+}) => {
+  const level   = Math.floor(xp / 100) + 1;
+  const hp01    = Math.max(0, Math.min(1, hp / 100));
+  const opacity = Math.max(0.12, hp01);
+  const glow    = Math.round(hp01 * 18);
+
+  // HP influence the creature's posture and expression
+  const droop    = (1 - hp01) * 10;    // body sag at low HP
+  const eyeOpen  = Math.max(0.1, hp01); // eye height ratio (drowsy at low HP)
+  const bobSpeed = hp01 < 0.05 ? '0s' : `${(2 + (1 - hp01) * 3).toFixed(1)}s`;
+
+  // uid for animation namespacing (avoids collisions between multiple sigils on screen)
+  const uid = color.replace(/[^a-fA-F0-9]/g, '').slice(0, 6) || '444444';
+
+  const cx = 50;
+  const bcy = 46 + droop * 0.5; // body center Y shifts down with droop
+
+  // Body size grows slightly with level
+  const bw = 14 + Math.min(level - 1, 8) * 0.7; // half-width
+  const bh = 17 + Math.min(level - 1, 8) * 0.5; // half-height
+
+  // Features unlocked by level
+  const twoEyes    = level >= 2;
+  const tentacles  = Math.min(6, Math.max(0, level - 1));
+  const showWings  = level >= 5;
+  const wingScale  = Math.min(1, (level - 4) / 5);
+  const showCrown  = level >= 10;
+  const thirdEye   = level >= 8;
+  const showOrbit  = level >= 13;
+  const showHalo   = level >= 16;
+
+  return (
+    <>
+      <style>{`
+        @keyframes sb_${uid} {
+          0%,100%{transform:translateY(0px)} 50%{transform:translateY(${hp01>0.05?'-':''}${Math.round(2+hp01*4)}px)}
+        }
+        @keyframes sb_blink_${uid} {
+          0%,88%,100%{transform:scaleY(1)} 93%{transform:scaleY(0.07)}
+        }
+        @keyframes sb_orbit_${uid} { to{transform:rotate(360deg)} }
+        @keyframes sb_halo_${uid}  { 0%,100%{opacity:0.25} 50%{opacity:0.6} }
+        @keyframes sb_waft_${uid}  {
+          0%,100%{transform:skewX(0deg)} 40%{transform:skewX(${hp01>0.1?6:2}deg)} 80%{transform:skewX(-${hp01>0.1?4:1}deg)}
+        }
+      `}</style>
+      <svg
+        viewBox="0 0 100 100"
+        width={size} height={size}
+        style={{
+          overflow: 'visible',
+          opacity,
+          filter: glow > 1
+            ? `drop-shadow(0 0 ${glow}px ${color}99) drop-shadow(0 0 ${Math.round(glow*0.4)}px ${color})`
+            : undefined,
+          animation: animate && hp01 > 0.03 ? `sb_${uid} ${bobSpeed} ease-in-out infinite` : undefined,
+        }}
+      >
+        {/* ── Halo (level 16+) ── */}
+        {showHalo && (
+          <ellipse cx={cx} cy={bcy} rx={bw + 26} ry={bh + 20}
+            fill="none" stroke={color} strokeWidth={0.6} strokeDasharray="3 5"
+            style={{ animation: animate ? `sb_halo_${uid} 3s ease-in-out infinite` : undefined }} />
+        )}
+
+        {/* ── Wings (level 5+) ── */}
+        {showWings && (() => {
+          const ws = 18 + wingScale * 22;
+          const wh = 12 + wingScale * 10;
+          const wo = 0.22 + wingScale * 0.45;
+          return (
+            <>
+              <path
+                d={`M ${cx - bw + 2},${bcy + 4} C ${cx - bw - ws},${bcy - wh} ${cx - bw - ws * 0.6},${bcy + wh * 0.8} ${cx - bw + 2},${bcy + 10}`}
+                fill={color} fillOpacity={wo * 0.5} stroke={color} strokeWidth={0.5} strokeOpacity={wo + 0.15} />
+              <path
+                d={`M ${cx + bw - 2},${bcy + 4} C ${cx + bw + ws},${bcy - wh} ${cx + bw + ws * 0.6},${bcy + wh * 0.8} ${cx + bw - 2},${bcy + 10}`}
+                fill={color} fillOpacity={wo * 0.5} stroke={color} strokeWidth={0.5} strokeOpacity={wo + 0.15} />
+            </>
+          );
+        })()}
+
+        {/* ── Crown / Cornes (level 10+) ── */}
+        {showCrown && (
+          <>
+            {[-9, 0, 9].map((dx, i) => (
+              <g key={i}>
+                <line x1={cx + dx} y1={bcy - bh} x2={cx + dx + (i===0?0:dx*0.2)} y2={bcy - bh - (i===1?14:10)}
+                      stroke={color} strokeWidth={0.8} strokeLinecap="round" />
+                <circle cx={cx + dx + (i===0?0:dx*0.2)} cy={bcy - bh - (i===1?14:10) - 2} r={1.5} fill={color} />
+              </g>
+            ))}
+          </>
+        )}
+
+        {/* ── Corps principal ── */}
+        <g style={{ animation: animate && hp01 > 0.05 ? `sb_waft_${uid} ${(3.5 + (1-hp01)*2).toFixed(1)}s ease-in-out infinite` : undefined,
+                    transformOrigin: `${cx}px ${bcy}px` }}>
+          {/* Ombre corporelle */}
+          <ellipse cx={cx} cy={bcy + bh + 2} rx={bw * 0.7} ry={2}
+            fill={color} fillOpacity={0.08 + hp01 * 0.1} />
+          {/* Corps */}
+          <ellipse cx={cx} cy={bcy} rx={bw} ry={bh}
+            fill={color} fillOpacity={0.12 + hp01 * 0.08}
+            stroke={color} strokeWidth={0.9} />
+          {/* Reflet interne */}
+          <ellipse cx={cx - bw * 0.22} cy={bcy - bh * 0.3} rx={bw * 0.3} ry={bh * 0.2}
+            fill={color} fillOpacity={0.18} />
+
+          {/* ── Troisième Œil frontal (level 8+) ── */}
+          {thirdEye && (
+            <ellipse cx={cx} cy={bcy - bh + 4} rx={2.5} ry={2.5 * eyeOpen}
+              fill={color} style={{ transformOrigin: `${cx}px ${bcy - bh + 4}px`,
+              animation: animate ? `sb_blink_${uid} 5s ease-in-out 1.3s infinite` : undefined }} />
+          )}
+
+          {/* ── Yeux ── */}
+          {twoEyes ? (
+            <>
+              {[cx - 5.5, cx + 5.5].map((ex, i) => (
+                <g key={i} style={{ transformOrigin: `${ex}px ${bcy - 1}px`,
+                  animation: animate ? `sb_blink_${uid} ${3.5 + i * 0.4}s ease-in-out ${i * 0.15}s infinite` : undefined }}>
+                  <ellipse cx={ex} cy={bcy - 1} rx={3.8} ry={3.8 * eyeOpen} fill={color} />
+                  <ellipse cx={ex + 0.8} cy={bcy - 1 - 0.5 * eyeOpen} rx={1.6} ry={1.6 * eyeOpen}
+                    fill="#000" fillOpacity={0.55} />
+                  {hp01 > 0.5 && <circle cx={ex + 1.2} cy={bcy - 2} r={0.7} fill="white" fillOpacity={0.6} />}
+                </g>
+              ))}
+            </>
+          ) : (
+            <g style={{ transformOrigin: `${cx}px ${bcy - 2}px`,
+              animation: animate ? `sb_blink_${uid} 4s ease-in-out infinite` : undefined }}>
+              <ellipse cx={cx} cy={bcy - 2} rx={5} ry={5 * eyeOpen} fill={color} />
+              <ellipse cx={cx + 1} cy={bcy - 2 - eyeOpen} rx={2.2} ry={2.2 * eyeOpen}
+                fill="#000" fillOpacity={0.55} />
+              {hp01 > 0.5 && <circle cx={cx + 1.8} cy={bcy - 3} r={0.9} fill="white" fillOpacity={0.6} />}
+            </g>
+          )}
+
+          {/* ── Bouche (expressive selon HP) ── */}
+          {hp01 > 0.6
+            ? <path d={`M ${cx - 5},${bcy + 8} Q ${cx},${bcy + 12} ${cx + 5},${bcy + 8}`}
+                fill="none" stroke={color} strokeWidth={0.8} strokeLinecap="round" />
+            : hp01 < 0.25
+            ? <path d={`M ${cx - 4},${bcy + 11} Q ${cx},${bcy + 8} ${cx + 4},${bcy + 11}`}
+                fill="none" stroke={color} strokeWidth={0.8} strokeLinecap="round" />
+            : <line x1={cx - 4} y1={bcy + 9.5} x2={cx + 4} y2={bcy + 9.5}
+                stroke={color} strokeWidth={0.8} strokeLinecap="round" />
+          }
+        </g>
+
+        {/* ── Tentacules / Filaments ── */}
+        {tentacles > 0 && Array.from({ length: tentacles }, (_, i) => {
+          const spread = Math.min(tentacles - 1, 5) * 5;
+          const x0 = tentacles === 1 ? cx : cx - spread / 2 + (spread / (tentacles - 1)) * i;
+          const wave = (i % 2 === 0 ? 1 : -1) * (3 + i * 1.2);
+          const len  = 14 + i * 1.5 + droop * 0.6;
+          return (
+            <path key={i}
+              d={`M ${x0},${bcy + bh - 1} Q ${x0 + wave},${bcy + bh + len * 0.55} ${x0 + wave * 0.4},${bcy + bh + len}`}
+              fill="none" stroke={color} strokeWidth={0.65} strokeLinecap="round" strokeOpacity={0.55} />
+          );
+        })}
+
+        {/* ── Particules orbitales (level 13+) ── */}
+        {showOrbit && (
+          <g style={{ animation: animate ? `sb_orbit_${uid} 7s linear infinite` : undefined,
+                      transformOrigin: `${cx}px ${bcy}px` }}>
+            {[0, 120, 240].map((deg, i) => {
+              const r = 34, a = (deg * Math.PI) / 180;
+              return <circle key={i} cx={cx + Math.cos(a) * r} cy={bcy + Math.sin(a) * (r * 0.5)}
+                r={1.8 - i * 0.3} fill={color} fillOpacity={0.7} />;
+            })}
+          </g>
+        )}
+      </svg>
+    </>
+  );
+};
 
 // ─── Composant principal ───────────────────────────────────────────────────────
 export default function AgendaExtremeMinimalism() {
@@ -128,6 +376,13 @@ export default function AgendaExtremeMinimalism() {
   // ── Note Editor fullscreen ─────────────────────────────────────────────────
   const [noteEditorOpen,  setNoteEditorOpen]  = useState(false);
   const [noteEditorValue, setNoteEditorValue] = useState('');
+
+  // ── Système Sigil — toasts & animations ───────────────────────────────────
+  const [soundEnabled,      setSoundEnabled]      = useState(true);
+  const [achievementToast,  setAchievementToast]  = useState<AchievementDef | null>(null);
+  const [levelUpAnim,       setLevelUpAnim]        = useState<{ show: boolean; level: number; color: string }>({ show: false, level: 1, color: '#fff' });
+  const [rewardToast,       setRewardToast]        = useState<{ text: string; positive: boolean } | null>(null);
+  const achievementTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   // ── Refs ───────────────────────────────────────────────────────────────────
   const paramsRef            = useRef<Record<string, NodeData>>({});
@@ -334,30 +589,26 @@ export default function AgendaExtremeMinimalism() {
       const raw: Sandbox[] = settingsData.sandboxes ?? [];
       const now = new Date();
       let needsSave = false;
+      const todayDateMs = new Date(now).setHours(0, 0, 0, 0);
       const loadedSandboxes = raw.map(sb => {
-        let s = { ...defaultVitality(), ...sb } as Sandbox;
+        let s = { ...defaultSigilStats(), ...sb } as Sandbox;
         const sbStartMs = new Date(s.startDate).setHours(0, 0, 0, 0);
-        const todayIdx  = Math.max(0, Math.floor((now.setHours(0,0,0,0) - sbStartMs) / 86_400_000));
-        const isFrozen  = s.isFrozenUntil ? new Date() <= new Date(s.isFrozenUntil) : false;
-        // Entropie
-        const cycle6 = Math.floor(todayIdx / 6);
-        const lastEC = Math.floor((s.lastEntropyDay ?? 0) / 6);
-        if (cycle6 > lastEC) {
-          if (!isFrozen) s.vitalite = Math.max(0, s.vitalite - 10 * (cycle6 - lastEC));
-          s.lastEntropyDay = cycle6 * 6; needsSave = true;
-        }
-        // Récolte
-        const cycle24 = Math.floor(todayIdx / 24);
-        const lastHC  = Math.floor((s.lastHarvestDay ?? 0) / 24);
-        if (cycle24 > lastHC) {
-          if (s.vitalite >= 80) { s.jokers += 1; needsSave = true; }
-          s.lastHarvestDay = cycle24 * 24; needsSave = true;
+        const todayIdx  = Math.max(0, Math.floor((todayDateMs - sbStartMs) / 86_400_000));
+        const lastDay   = s.lastUpdateDay ?? 0;
+        const daysMissed = todayIdx - lastDay;
+        if (daysMissed > 0) {
+          s.hp = Math.max(0, s.hp - 10 * daysMissed);
+          s.lastUpdateDay = todayIdx;
+          needsSave = true;
         }
         return s;
       });
       setSandboxes(loadedSandboxes);
       if (activeSandboxId && !loadedSandboxes.some(sb => sb.id === activeSandboxId)) { setActiveSandboxId(null); setNiveau(6); }
       if (needsSave && session) fetch('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sandboxes: loadedSandboxes }) });
+      // Avertissement HP bas après entropie
+      const criticalSbs = loadedSandboxes.filter(sb => sb.hp < 20);
+      // if (criticalSbs.length > 0) setTimeout(() => Sounds.hpLow(), 1200);
       const validRituels: Ritual[] = Array.isArray(ritualsData) ? ritualsData : [];
       setRituels(validRituels);
       const validRitualIds = validRituels.map(r => r._id ?? r.id);
@@ -570,7 +821,7 @@ export default function AgendaExtremeMinimalism() {
   const submitWizard = async () => {
     if (wizard.type === 'DIMENSION') {
       if (!wizard.data.nom.trim()) return;
-      const newSb: Sandbox = { id: `sb_${Date.now()}`, nom: wizard.data.nom.toUpperCase(), couleur: wizard.data.couleur, startDate: new Date(wizard.data.date).toISOString(), ...defaultVitality() };
+      const newSb: Sandbox = { id: `sb_${Date.now()}`, nom: wizard.data.nom.toUpperCase(), couleur: wizard.data.couleur, startDate: new Date(wizard.data.date).toISOString(), ...defaultSigilStats() };
       saveSandboxes([...sandboxes, newSb]);
     } else {
       if (!wizard.data.nom.trim() || wizard.data.elements.length === 0) return;
@@ -602,13 +853,6 @@ export default function AgendaExtremeMinimalism() {
     return currentNodes.map(n => getComputedNodeId(activeSandboxId, targetNiveau, n.day, n.block));
   }, [activeSandboxId, getComputedNodeId]);
 
-  // ── Joker ──────────────────────────────────────────────────────────────────
-  const useJoker = (sb: Sandbox) => {
-    if (sb.jokers <= 0) return;
-    const frozenUntil = new Date(); frozenUntil.setDate(frozenUntil.getDate() + 6);
-    updateSandbox(sb.id, { jokers: sb.jokers - 1, isFrozenUntil: frozenUntil.toISOString() });
-  };
-
   // ── Sandbox CRUD ───────────────────────────────────────────────────────────
   const supprimerSandbox = async (sb: Sandbox) => {
     if (!confirm(`Supprimer "${sb.nom}" ? Irréversible.`)) return;
@@ -638,7 +882,7 @@ export default function AgendaExtremeMinimalism() {
       const data = JSON.parse(await file.text());
       if (data.version !== 1 || !data.sandbox) { alert('Format invalide'); return; }
       const newId  = `sb_${Date.now()}`;
-      const newSb: Sandbox = { ...defaultVitality(), ...data.sandbox, id: newId, nom: data.sandbox.nom + '_IMP' };
+      const newSb: Sandbox = { ...defaultSigilStats(), ...data.sandbox, id: newId, nom: data.sandbox.nom + '_IMP' };
       const oldPrefix = `${data.sandbox.id}_`, newPrefix = `${newId}_`;
       const newParams = { ...paramsRef.current };
       (data.nodes ?? []).forEach((n: NodeData) => { const key = n.nodeId.replace(oldPrefix, newPrefix); newParams[key] = { ...n, nodeId: key, sandboxId: newId }; });
@@ -717,12 +961,95 @@ export default function AgendaExtremeMinimalism() {
     setLocalInputValue('');
   };
 
+  // ── Succès : vérification et déverrouillage ────────────────────────────────
+  const checkAndUnlockAchievements = useCallback((
+    sb: Sandbox,
+    overrides: { totalDone?: number; streak?: number; notes?: number; rituals?: number } = {}
+  ) => {
+    const already = new Set(sb.achievements ?? []);
+    const stats   = sandboxStats[sb.id] ?? { todosDone: 0, streak: 0, notesCount: 0, ritualsCount: 0 };
+    const totalDone  = overrides.totalDone  ?? stats.todosDone;
+    const streak     = overrides.streak     ?? stats.streak;
+    const notes      = overrides.notes      ?? stats.notesCount;
+    const rituals    = overrides.rituals    ?? stats.ritualsCount;
+
+    const toUnlock: string[] = [];
+    const ch = (id: string, cond: boolean) => { if (cond && !already.has(id)) toUnlock.push(id); };
+
+    ch('first_task', totalDone >= 1);
+    ch('tasks_10',   totalDone >= 10);
+    ch('tasks_50',   totalDone >= 50);
+    ch('tasks_100',  totalDone >= 100);
+    ch('tasks_500',  totalDone >= 500);
+    ch('xp_100',     sb.xp >= 100);
+    ch('xp_500',     sb.xp >= 500);
+    ch('xp_1000',    sb.xp >= 1000);
+    ch('xp_5000',    sb.xp >= 5000);
+    ch('hp_max',     sb.hp >= 100);
+    ch('survivor',   sb.hp >= 50 && (sandboxes.find(s => s.id === sb.id)?.hp ?? 100) < 10);
+    ch('streak_7',   streak >= 7);
+    ch('streak_30',  streak >= 30);
+    ch('streak_100', streak >= 100);
+    ch('notes_10',   notes >= 10);
+    ch('notes_50',   notes >= 50);
+    ch('ritual_1',   rituals >= 1);
+    ch('ritual_5',   rituals >= 5);
+
+    if (toUnlock.length > 0) {
+      const newAchievements = [...(sb.achievements ?? []), ...toUnlock];
+      updateSandbox(sb.id, { achievements: newAchievements });
+      // Afficher un par un avec délai
+      toUnlock.forEach((id, i) => {
+        const def = ACHIEVEMENT_MAP[id];
+        if (!def) return;
+        setTimeout(() => {
+          if (soundEnabled) Sounds.achievement();
+          setAchievementToast(def);
+          if (achievementTimerRef.current) clearTimeout(achievementTimerRef.current);
+          achievementTimerRef.current = setTimeout(() => setAchievementToast(null), 4000);
+        }, i * 4200);
+      });
+    }
+  }, [sandboxStats, sandboxes, soundEnabled, updateSandbox]);
+
+  // ── Todos ──────────────────────────────────────────────────────────────────
   const toggleTodo = (id: number) => {
     const todo = (nodeData.todos ?? []).find(t => t.id === id);
-    const becomingDone = todo && !todo.done;
+    if (!todo) return;
+    const becomingDone = !todo.done;
     setNodeData(c => ({ ...c, todos: (c.todos ?? []).map(t => t.id === id ? { ...t, done: !t.done } : t) }));
-    if (becomingDone && activeSandboxId)
-      updateSandbox(activeSandboxId, { vitalite: Math.min(100, (activeSandbox?.vitalite ?? 50) + 2.5) });
+
+    if (!activeSandboxId) return;
+    const sb = sandboxes.find(s => s.id === activeSandboxId);
+    if (!sb) return;
+
+    if (becomingDone) {
+      const newHp  = Math.min(100, sb.hp + 5);
+      const newXp  = sb.xp + 10;
+      const prevLv = Math.floor(sb.xp  / 100) + 1;
+      const newLv  = Math.floor(newXp  / 100) + 1;
+      const newTotalDone = (sandboxStats[activeSandboxId]?.todosDone ?? 0) + 1;
+
+      updateSandbox(activeSandboxId, { hp: newHp, xp: newXp });
+      if (soundEnabled) Sounds.taskComplete();
+      setRewardToast({ text: '+10 XP  +5 HP', positive: true });
+      setTimeout(() => setRewardToast(null), 1800);
+
+      if (newLv > prevLv) {
+        if (soundEnabled) Sounds.levelUp();
+        setLevelUpAnim({ show: true, level: newLv, color: sb.couleur });
+        setTimeout(() => setLevelUpAnim(p => ({ ...p, show: false })), 2800);
+      }
+
+      checkAndUnlockAchievements({ ...sb, hp: newHp, xp: newXp }, { totalDone: newTotalDone });
+    } else {
+      const newHp = Math.max(0, sb.hp - 5);
+      const newXp = Math.max(0, sb.xp - 10);
+      updateSandbox(activeSandboxId, { hp: newHp, xp: newXp });
+      if (soundEnabled) Sounds.taskUncheck();
+      setRewardToast({ text: '−10 XP  −5 HP', positive: false });
+      setTimeout(() => setRewardToast(null), 1800);
+    }
   };
   const deleteTodo = (id: number) => setNodeData(c => ({ ...c, todos: (c.todos ?? []).filter(t => t.id !== id) }));
 
@@ -766,16 +1093,14 @@ export default function AgendaExtremeMinimalism() {
     if (niveau === 6) return (
       <div className="flex flex-wrap items-center justify-center gap-6 md:gap-10 w-full max-w-[1200px] mx-auto px-4 md:px-8 h-full content-center overflow-y-auto">
         {sandboxes.map(sb => {
-          const vitClass = getVitalityClasses(sb.vitalite);
-          const vitStyle = getVitalityStyle(sb);
-          const isFrozen = sb.isFrozenUntil ? new Date() <= new Date(sb.isFrozenUntil) : false;
+          const sigilLevel = Math.floor(sb.xp / 100) + 1;
+          const hpStatus   = sb.hp < 30 ? 'DANGER' : sb.hp > 70 ? 'ACTIF' : 'STABLE';
 
           const menuItems: ContextMenuItem[] = [
             { label: 'Ouvrir', action: () => naviguer(5, null, null, sb.id) },
             { label: 'Stats & Infos', action: () => { setInfoPanelCtx({ type: 'sandbox', payload: sb }); setInfoPanelOpen(true); setInfoPanelMin(false); } },
             { label: 'Exporter JSON', action: () => exportDimension(sb) },
             { separator: true, label: '', action: () => {} },
-            ...(sb.jokers > 0 ? [{ label: `❄ Joker (${sb.jokers} dispo)`, action: () => useJoker(sb) }] : []),
             { label: 'Supprimer', action: () => supprimerSandbox(sb), danger: true },
           ];
 
@@ -786,23 +1111,28 @@ export default function AgendaExtremeMinimalism() {
                  onTouchStart={startLongPress(menuItems)}
                  onTouchEnd={cancelLongPress}
                  onTouchMove={cancelLongPress}
-                 className={`group w-[150px] md:w-[250px] aspect-square flex flex-col items-center justify-center cursor-pointer transition-all duration-500 hover:scale-[1.03] hover:z-10 border border-white/10 shrink-0 hover:border-transparent relative overflow-hidden ${vitClass}`}
-                 style={{ backgroundColor: '#000', ...vitStyle }}
-                 onMouseEnter={e => (e.currentTarget as HTMLDivElement).style.backgroundColor = sb.couleur}
-                 onMouseLeave={e => (e.currentTarget as HTMLDivElement).style.backgroundColor = '#000'}>
+                 className="group w-[150px] md:w-[250px] aspect-square flex flex-col items-center justify-center cursor-pointer transition-all duration-500 hover:scale-[1.03] hover:z-10 border border-white/10 shrink-0 hover:border-transparent relative overflow-hidden bg-black">
 
-              {/* Indicateur vitalité — barre fine en bas */}
-              <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-white/10">
-                <div className="h-full transition-all duration-700"
-                     style={{ width: `${Math.round(sb.vitalite)}%`, backgroundColor: sb.vitalite < 30 ? '#555' : sb.vitalite > 70 ? '#fff' : `${sb.couleur}cc` }} />
+              {/* Sigil centré, occupe le fond de la carte */}
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <SigilAvatar xp={sb.xp} hp={sb.hp} color={sb.couleur} size={160} />
               </div>
 
-              {/* Badges statut */}
-              {isFrozen && <span className="absolute top-3 right-3 text-[8px] font-mono text-white/40">❄</span>}
-              {sb.jokers > 0 && !isFrozen && <span className="absolute top-3 right-3 text-[8px] font-mono text-white/30">{sb.jokers}◆</span>}
+              {/* Nom en surimpression */}
+              <span className="relative z-10 text-xl md:text-3xl lg:text-4xl font-black text-white/60 tracking-[0.1em] uppercase text-center px-4 leading-tight group-hover:text-white transition-colors">
+                {sb.nom}
+              </span>
 
-              <span className="text-xl md:text-3xl lg:text-4xl font-black text-white/60 tracking-[0.1em] uppercase text-center px-4 leading-tight group-hover:text-white transition-colors">{sb.nom}</span>
-              <span className="text-[8px] font-mono text-white/0 group-hover:text-white/30 transition-colors mt-2 uppercase tracking-widest">{formatDate(new Date(sb.startDate))}</span>
+              {/* Niveau sigil */}
+              <span className="relative z-10 text-[7px] font-mono text-white/0 group-hover:text-white/40 transition-colors mt-1 uppercase tracking-widest">
+                LVL {sigilLevel} · {hpStatus}
+              </span>
+
+              {/* Barre HP fine en bas */}
+              <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-white/10">
+                <div className="h-full transition-all duration-700"
+                     style={{ width: `${Math.round(sb.hp)}%`, backgroundColor: sb.hp < 30 ? '#555' : sb.hp > 70 ? sb.couleur : `${sb.couleur}aa` }} />
+              </div>
             </div>
           );
         })}
@@ -949,6 +1279,67 @@ export default function AgendaExtremeMinimalism() {
   };
 
   // ══════════════════════════════════════════════════════════════════════════
+  // RENDU — Succès, Level-up, Récompense
+  // ══════════════════════════════════════════════════════════════════════════
+  const renderAchievementToast = () => {
+    if (!achievementToast) return null;
+    const rColor = RARITY_COLOR[achievementToast.rarity] ?? '#888';
+    return (
+      <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[300] flex flex-col items-center gap-1.5 pointer-events-none"
+           style={{ animation: 'achSlideUp 0.4s cubic-bezier(0.16,1,0.3,1) both' }}>
+        <style>{`
+          @keyframes achSlideUp { from{opacity:0;transform:translateX(-50%) translateY(24px)} to{opacity:1;transform:translateX(-50%) translateY(0)} }
+          @keyframes achFadeOut { from{opacity:1} to{opacity:0} }
+        `}</style>
+        <div className="px-5 py-3 flex flex-col items-center gap-1 border"
+             style={{ backgroundColor: '#000', borderColor: rColor, boxShadow: `0 0 24px ${rColor}55` }}>
+          <span className="text-[7px] font-mono uppercase tracking-[0.35em]" style={{ color: rColor }}>
+            SUCCÈS DÉVERROUILLÉ — {achievementToast.rarity.toUpperCase()}
+          </span>
+          <div className="flex items-center gap-3 mt-1">
+            <span className="text-2xl" style={{ color: rColor }}>{achievementToast.icon}</span>
+            <div className="flex flex-col">
+              <span className="text-sm font-black text-white tracking-widest uppercase">{achievementToast.nom}</span>
+              <span className="text-[8px] font-mono text-white/40 uppercase tracking-widest">{achievementToast.description}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderLevelUpAnim = () => {
+    if (!levelUpAnim.show) return null;
+    return (
+      <div className="fixed inset-0 z-[250] flex flex-col items-center justify-center pointer-events-none">
+        <style>{`@keyframes lvlPop { 0%{opacity:0;transform:scale(0.5)} 30%{opacity:1;transform:scale(1.05)} 80%{opacity:1;transform:scale(1)} 100%{opacity:0;transform:scale(1.1)} }`}</style>
+        <div className="flex flex-col items-center gap-4" style={{ animation: 'lvlPop 2.8s cubic-bezier(0.16,1,0.3,1) forwards' }}>
+          <SigilAvatar xp={(levelUpAnim.level - 1) * 100} hp={100} color={levelUpAnim.color} size={140} animate />
+          <div className="flex flex-col items-center gap-1">
+            <span className="text-[8px] font-mono uppercase tracking-[0.5em]" style={{ color: levelUpAnim.color }}>NIVEAU ATTEINT</span>
+            <span className="text-7xl font-black" style={{ color: levelUpAnim.color, textShadow: `0 0 40px ${levelUpAnim.color}` }}>
+              {levelUpAnim.level}
+            </span>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderRewardToast = () => {
+    if (!rewardToast) return null;
+    return (
+      <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[240] pointer-events-none select-none">
+        <style>{`@keyframes rwFloat { 0%{opacity:0;transform:translateX(-50%) translateY(0)} 15%{opacity:1} 80%{opacity:0.8} 100%{opacity:0;transform:translateX(-50%) translateY(-32px)} }`}</style>
+        <span className="text-[11px] font-mono font-black tracking-[0.25em] uppercase whitespace-nowrap"
+              style={{ color: rewardToast.positive ? '#88ffaa' : '#ff6655', animation: 'rwFloat 1.8s ease-out forwards' }}>
+          {rewardToast.text}
+        </span>
+      </div>
+    );
+  };
+
+  // ══════════════════════════════════════════════════════════════════════════
   // RENDU — Info Panel flottant
   // ══════════════════════════════════════════════════════════════════════════
   const renderInfoPanel = () => {
@@ -962,13 +1353,33 @@ export default function AgendaExtremeMinimalism() {
 
     if (infoPanelCtx.type === 'sandbox' && infoPanelCtx.payload) {
       const sbCtx: Sandbox = infoPanelCtx.payload;
+      // Ré-obtenir la sandbox depuis le state pour avoir les valeurs à jour
+      const sbLive = sandboxes.find(s => s.id === sbCtx.id) ?? sbCtx;
       const sCtx = sandboxStats[sbCtx.id];
-      const isFrozen = sbCtx.isFrozenUntil ? new Date() <= new Date(sbCtx.isFrozenUntil) : false;
+      const sigilLevel = Math.floor(sbLive.xp / 100) + 1;
+      const xpNext     = sigilLevel * 100;         // XP pour le prochain niveau
+      const xpCurrent  = sbLive.xp - (sigilLevel - 1) * 100; // XP dans le niveau courant
+      const hpLabel    = sbLive.hp < 30 ? 'DANGER' : sbLive.hp > 70 ? 'STABLE' : 'STABLE';
       title = sbCtx.nom;
       content = (
         <div className="flex flex-col gap-3">
-          <Row label="VITALITÉ" value={`${Math.round(sbCtx.vitalite)}%`} sub={isFrozen ? '❄ STASE' : sbCtx.vitalite < 30 ? 'DANGER' : sbCtx.vitalite > 70 ? 'ACTIF' : 'STABLE'} />
-          <div className="w-full h-px bg-black/10"><div className="h-px bg-black transition-all" style={{ width: `${sbCtx.vitalite}%` }} /></div>
+          {/* Sigil grand format */}
+          <div className="flex justify-center py-2">
+            <SigilAvatar xp={sbLive.xp} hp={sbLive.hp} color={sbLive.couleur} size={110} />
+          </div>
+          {/* Métriques en monospace */}
+          <div className="flex flex-col gap-1 font-mono text-[8px] text-black/60 tracking-widest uppercase border-t border-gray-100 pt-2">
+            <span>NIVEAU : {sigilLevel}</span>
+            <span>XP : {sbLive.xp} / {xpNext}</span>
+            <div className="w-full h-px bg-black/10 my-0.5">
+              <div className="h-px bg-black transition-all" style={{ width: `${Math.round((xpCurrent / 100) * 100)}%` }} />
+            </div>
+            <span>VITALITÉ : {Math.round(sbLive.hp)}% ({hpLabel})</span>
+            <div className="w-full h-px bg-black/10 my-0.5">
+              <div className="h-px transition-all"
+                   style={{ width: `${Math.round(sbLive.hp)}%`, backgroundColor: sbLive.hp < 30 ? '#999' : sbLive.couleur }} />
+            </div>
+          </div>
           {sCtx && (
             <>
               <Row label="STREAK" value={sCtx.streak > 0 ? `${sCtx.streak}J` : '—'} sub={sCtx.streak >= 7 ? `rec. ${sCtx.streakRecord}J` : undefined} />
@@ -977,8 +1388,25 @@ export default function AgendaExtremeMinimalism() {
               <Row label="RITUELS" value={`${sCtx.ritualsCount}`} />
             </>
           )}
-          {sbCtx.jokers > 0 && <Row label="JOKERS" value={`${sbCtx.jokers}`} />}
           <span className="text-[7px] font-mono text-gray-300 uppercase tracking-widest pt-1">{formatDate(new Date(sbCtx.startDate))}</span>
+          {/* Succès déverrouillés */}
+          {(sbLive.achievements ?? []).length > 0 && (
+            <div className="flex flex-col gap-1 pt-2 border-t border-gray-100">
+              <span className="text-[6px] font-mono text-gray-300 uppercase tracking-[0.3em]">SUCCÈS ({sbLive.achievements.length}/{ACHIEVEMENTS.length})</span>
+              <div className="flex flex-wrap gap-1 mt-0.5">
+                {sbLive.achievements.map(id => {
+                  const def = ACHIEVEMENT_MAP[id];
+                  if (!def) return null;
+                  return (
+                    <span key={id} title={`${def.nom} — ${def.description}`}
+                          className="text-sm cursor-help" style={{ color: RARITY_COLOR[def.rarity] }}>
+                      {def.icon}
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
       );
     } else if (infoPanelCtx.type === 'ritual' && infoPanelCtx.payload) {
@@ -1043,7 +1471,7 @@ export default function AgendaExtremeMinimalism() {
             </>
           )}
 
-          {sb && <Row label="VITALITÉ" value={`${Math.round(sb.vitalite)}%`} sub={sb.vitalite < 30 ? 'DANGER' : sb.vitalite > 70 ? 'ACTIF' : 'STABLE'} />}
+          {sb && <Row label="VITALITÉ" value={`${Math.round(sb.hp)}%`} sub={sb.hp < 30 ? 'DANGER' : sb.hp > 70 ? 'ACTIF' : 'STABLE'} />}
         </div>
       );
     }
@@ -1278,6 +1706,9 @@ export default function AgendaExtremeMinimalism() {
       {renderInfoPanel()}
       {renderContextMenu()}
       {renderNoteEditor()}
+      {renderAchievementToast()}
+      {renderLevelUpAnim()}
+      {renderRewardToast()}
 
       {isSidebarOpen && <div className="fixed inset-0 z-40 bg-transparent" onClick={() => setIsSidebarOpen(false)} />}
 
@@ -1296,6 +1727,12 @@ export default function AgendaExtremeMinimalism() {
 
       {/* ── Boutons topbar droite ── */}
       <div className="absolute top-6 md:top-8 right-6 md:right-8 z-40 flex items-center gap-3">
+        {/* Bouton Son */}
+        <button onClick={() => setSoundEnabled(p => !p)}
+                className={`text-[9px] md:text-[10px] font-mono tracking-widest uppercase transition-colors ${soundEnabled ? 'text-white/40 hover:text-white' : 'text-white/15 hover:text-white/40'}`}
+                title={soundEnabled ? 'Son activé' : 'Son désactivé'}>
+          {soundEnabled ? '[ ♪ ]' : '[ ♩ ]'}
+        </button>
         {/* Bouton INFO → panel flottant */}
         <button onClick={() => { setInfoPanelCtx({ type: 'view' }); setInfoPanelOpen(p => !p); if (!infoPanelOpen) setInfoPanelMin(false); }}
                 className={`text-[9px] md:text-[10px] font-mono tracking-widest uppercase transition-colors ${infoPanelOpen ? 'text-white' : 'text-white/40 hover:text-white active:text-white'}`}>
@@ -1324,7 +1761,7 @@ export default function AgendaExtremeMinimalism() {
             <div className="flex gap-6 items-end">
               <div className="flex flex-col gap-0.5"><span className="text-[7px] font-mono text-gray-400 uppercase tracking-widest">Tâches</span><span className="text-2xl font-black">{revueStats.done}<span className="text-gray-300 font-normal text-base">/{revueStats.todos}</span></span></div>
               <div className="flex flex-col gap-0.5"><span className="text-[7px] font-mono text-gray-400 uppercase tracking-widest">Notes</span><span className="text-2xl font-black">{revueStats.notes}</span></div>
-              {activeSandbox && <div className="flex flex-col gap-0.5"><span className="text-[7px] font-mono text-gray-400 uppercase tracking-widest">Vitalité</span><span className="text-2xl font-black">{Math.round(activeSandbox.vitalite)}%</span></div>}
+              {activeSandbox && <div className="flex flex-col gap-0.5"><span className="text-[7px] font-mono text-gray-400 uppercase tracking-widest">Vitalité</span><span className="text-2xl font-black">{Math.round(activeSandbox.hp)}%</span></div>}
             </div>
             {revueStats.todos > 0 && (<div className="w-full h-px bg-gray-100"><div className="h-px bg-black" style={{ width: `${Math.round((revueStats.done/revueStats.todos)*100)}%` }} /></div>)}
             <button onClick={() => setShowRevue(false)} className="text-[7px] font-mono uppercase tracking-widest text-gray-400 hover:text-black active:text-black transition-colors self-end">FERMER</button>
